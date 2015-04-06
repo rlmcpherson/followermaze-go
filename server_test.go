@@ -29,6 +29,10 @@ func TestMain(m *testing.M) {
 // runs the test jar file
 func TestStartServerJar(t *testing.T) {
 
+	if testing.Short() {
+		t.Skipf("skipping jar test in short mode")
+	}
+
 	// skip if incorrect java version
 	vc := exec.Command("java", "-version")
 	vc.Env = []string{}
@@ -79,19 +83,19 @@ func TestStartServerBadAddrs(t *testing.T) {
 func TestParseEvent(t *testing.T) {
 	var evTests = []struct {
 		in  string
-		e   Event
+		e   event
 		err bool
 	}{
-		{"666|F|60|50", Event{666, Follow, 60, 50, "666|F|60|50\n"}, false},
-		{"666|U|60|50", Event{666, Unfollow, 60, 50, "666|U|60|50\n"}, false},
-		{"666|P|60|50", Event{666, PrivateMsg, 60, 50, "666|P|60|50\n"}, false},
-		{"666|B", Event{666, Broadcast, 0, 0, "666|B\n"}, false},
-		{"1|S|1", Event{1, StatusUpdate, 1, 0, "1|S|1\n"}, false},
-		{"1|S|60|50", Event{}, true},
-		{"", Event{}, true},
-		{"foo|foo", Event{}, true},
-		{"1|Q|60|50", Event{}, true},
-		{"666|P|60|50|1", Event{}, true},
+		{"666|F|60|50", event{666, follow, 60, 50, "666|F|60|50\n"}, false},
+		{"666|U|60|50", event{666, unfollow, 60, 50, "666|U|60|50\n"}, false},
+		{"666|P|60|50", event{666, privageMsg, 60, 50, "666|P|60|50\n"}, false},
+		{"666|B", event{666, broadcast, 0, 0, "666|B\n"}, false},
+		{"1|S|1", event{1, statusUpdate, 1, 0, "1|S|1\n"}, false},
+		{"1|S|60|50", event{}, true},
+		{"", event{}, true},
+		{"foo|foo", event{}, true},
+		{"1|Q|60|50", event{}, true},
+		{"666|P|60|50|1", event{}, true},
 	}
 	for _, tt := range evTests {
 		e, err := parseEvent(tt.in)

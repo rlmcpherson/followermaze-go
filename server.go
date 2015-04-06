@@ -8,22 +8,23 @@ import (
 	"net"
 	"strconv"
 	"strings"
+
+	"golang.org/x/net/context"
 )
 
-type EventKind uint
+type eventType uint
 
 const (
-	Follow EventKind = 1 << iota
-	Unfollow
-	Broadcast
-	PrivateMsg
-	StatusUpdate
+	follow eventType = 1 << iota
+	unfollow
+	broadcast
+	privageMsg
+	statusUpdate
 )
 
-type Event struct {
-	//Payload    string
+type event struct {
 	SequenceID int
-	Kind       EventKind
+	Kind       eventType
 	FromID     int
 	ToID       int
 	RawMessage string
@@ -34,31 +35,52 @@ type clientConn struct {
 	net.Conn
 }
 
-func start() error {
+// StartServer starts a followermaze server listening for events at srcAddr and clients at clientAddr
+// firstSequenceID must be set to the first event id to expect (usually 0)
+// TODO: implement context?
+func StartServer(ctx context.Context, srcAddr, clientAddr string, firstSequenceID int) error {
 
 	// start notifier
-	ech, connch, err := notifier()
-	if err != nil {
-
-		return err
-	}
-
-	// start src, client servers by passing funcs to runListener
-	srcSrv, err := net.Listen("tcp", "localhost:9090")
-	clientSrv, err := net.Listen("tcp", "localhost:9099")
+	ech, connch, err := notifier(firstSequenceID)
 	if err != nil {
 		return err
 	}
+
+	// start src, client servers
+	srcSrv, err := net.Listen("tcp", srcAddr)
+	if err != nil {
+		return err
+	}
+	clientSrv, err := net.Listen("tcp", clientAddr)
+	if err != nil {
+		return err
+	}
+
+	// pass the servers and connHandler functions to runListener
 	go runListener(clientSrv, clientHandler(connch))
-	runListener(srcSrv, srcHandler(ech))
-	// TODO: go this
+	go runListener(srcSrv, srcHandler(ech))
 	return nil
+
+}
+
+func runListener(l net.Listener, h connHandler) {
+	for {
+		// wait for a connection.
+		conn, err := l.Accept()
+		if err != nil {
+			log.Fatal(err)
+		}
+		// handle the connection in a new goroutine.
+		go h(conn)
+	}
 
 }
 
 type connHandler func(c net.Conn)
 
-func srcHandler(ech chan<- Event) connHandler {
+// srcHandler returns a connHandler function that parses an event message
+// and sends the event on ech
+func srcHandler(ech chan<- event) connHandler {
 	return func(c net.Conn) {
 		scanner := bufio.NewScanner(c)
 		var err error
@@ -79,6 +101,8 @@ func srcHandler(ech chan<- Event) connHandler {
 
 }
 
+// clientHandler returns a connHandler function that parses a client connection message
+// and sends the connection on connch
 func clientHandler(connch chan<- clientConn) connHandler {
 	return func(c net.Conn) {
 
@@ -97,30 +121,23 @@ func clientHandler(connch chan<- clientConn) connHandler {
 
 }
 
-//type client struct {
-//ID        int
-//followers []int
-//}
-
-func notifier() (chan<- Event, chan<- clientConn, error) {
-	ech := make(chan Event)
+func notifier(lastSequenceID int) (chan<- event, chan<- clientConn, error) {
+	ech := make(chan event)
 	connch := make(chan clientConn)
 	followers := make(map[int][]int)
 	conns := make(map[int]clientConn)
-	eventQ := make(map[int]Event)
-	lastSequenceID := 1
+	eventQ := make(map[int]event)
 	go func() {
 		for {
 
 			select {
 			case e := <-ech:
-				log.Println(e)
 				eventQ[e.SequenceID] = e
+				// handle events in order
 				for {
 					if e, ok := eventQ[lastSequenceID]; ok {
-						log.Printf("sending event %d", e.SequenceID)
-						err := handleEvent(e, followers, conns)
-						if err != nil {
+						delete(eventQ, e.SequenceID)
+						if err := handleEvent(e, followers, conns); err != nil {
 							log.Printf("notification error: %v", err)
 						}
 						lastSequenceID++
@@ -141,27 +158,29 @@ func notifier() (chan<- Event, chan<- clientConn, error) {
 
 }
 
-func handleEvent(e Event, followers map[int][]int, conns map[int]clientConn) error {
+func handleEvent(e event, followers map[int][]int, conns map[int]clientConn) error {
 	switch e.Kind {
-	case Broadcast:
+	case broadcast:
 		var n []int
 		log.Printf("broadcast from %d to %v", e.FromID, n)
 		for _, c := range conns {
-			return notifyClient(e, c)
+			if err := notifyClient(e, c); err != nil {
+				return err
+			}
 		}
-	case PrivateMsg:
+	case privageMsg:
 		if c, ok := conns[e.ToID]; ok {
 			log.Printf("private from %d to %d", e.FromID, e.ToID)
 			return notifyClient(e, c)
 		}
-	case Follow:
+	case follow:
 		f := followers[e.ToID]
 		followers[e.ToID] = append(f, e.FromID) // add follower
 		log.Printf("follow from %d to %d, followers %v", e.FromID, e.ToID, followers[e.ToID])
 		if c, ok := conns[e.ToID]; ok {
 			return notifyClient(e, c)
 		}
-	case StatusUpdate:
+	case statusUpdate:
 		for _, f := range followers[e.FromID] {
 			if c, ok := conns[f]; ok {
 				if err := notifyClient(e, c); err != nil {
@@ -170,46 +189,25 @@ func handleEvent(e Event, followers map[int][]int, conns map[int]clientConn) err
 				log.Printf("status from %d to %v", e.FromID, followers[e.FromID])
 			}
 		}
-	case Unfollow:
+	case unfollow:
 		// remove follower
 		delete(followers, e.ToID)
 		log.Printf("%d unfollowed %d", e.FromID, e.ToID)
 	default:
-		panic("unknown event type")
-
+		return fmt.Errorf("unknown event type %v", e)
 	}
 	return nil
 }
 
-func notifyClient(e Event, c clientConn) error {
+func notifyClient(e event, c clientConn) error {
 	log.Printf("notifying %d of %d from %d", c.ID, e.SequenceID, e.FromID)
 	_, err := io.Copy(c.Conn, strings.NewReader(e.RawMessage))
 	return err
 }
 
-func runListener(l net.Listener, h connHandler) {
-	for {
-		// Wait for a connection.
-		conn, err := l.Accept()
-		if err != nil {
-			log.Fatal(err)
-		}
-		// Handle the connection in a new goroutine.
-		go h(conn)
-	}
-
-}
-
 // how to handle closed source connection?
 // how to handle closed listener connection?
 // handle cancellation? context?
-
-// SourceServer
-// Parse Message, send to Notifier
-
-// Listener
-// Parse message
-// send connection to notifier
 
 // Notifier
 // receive connections from ListenerServer
@@ -218,8 +216,14 @@ func runListener(l net.Listener, h connHandler) {
 // track sequenceID
 // select on both conns and events
 
-func parseEvent(s string) (Event, error) {
-	var e Event
+//TODO:
+// cli w/ configurable addrs for servers
+// clean up error handling,
+// clean up logging
+// graceful stopping?
+
+func parseEvent(s string) (event, error) {
+	var e event
 	var err error
 	parseErr := fmt.Errorf("error parsing %s", s)
 	ef := strings.Split(s, "|")
@@ -235,19 +239,19 @@ func parseEvent(s string) (Event, error) {
 	// find event kind
 	switch ef[1] {
 	case "F":
-		e.Kind = Follow
-		goto ParseToFrom
+		e.Kind = follow
+		goto parsetofrom
 	case "B":
-		e.Kind = Broadcast
+		e.Kind = broadcast
 		return e, nil
 	case "U":
-		e.Kind = Unfollow
-		goto ParseToFrom
+		e.Kind = unfollow
+		goto parsetofrom
 	case "P":
-		e.Kind = PrivateMsg
-		goto ParseToFrom
+		e.Kind = privageMsg
+		goto parsetofrom
 	case "S":
-		e.Kind = StatusUpdate
+		e.Kind = statusUpdate
 		if len(ef) != 3 {
 			return e, parseErr
 		}
@@ -256,7 +260,8 @@ func parseEvent(s string) (Event, error) {
 	default:
 		return e, fmt.Errorf("unknown event type: %s", e)
 	}
-ParseToFrom:
+
+parsetofrom:
 	if len(ef) != 4 {
 		return e, parseErr
 	}
