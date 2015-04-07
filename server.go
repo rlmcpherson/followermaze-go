@@ -119,6 +119,7 @@ func srcHandler(ech chan<- event) connHandler {
 		scanner := bufio.NewScanner(c)
 		var err error
 		for scanner.Scan() {
+
 			e, err := parseEvent(scanner.Text())
 			if err != nil {
 				log.Printf("event parse error: %v", err)
@@ -158,8 +159,8 @@ func clientHandler(connch chan<- clientConn) connHandler {
 func notifier(lastSequenceID int, done chan struct{}) (chan<- event, chan<- clientConn, error) {
 	ech := make(chan event)
 	connch := make(chan clientConn)
-	followers := make(map[int][]int)
-	conns := make(map[int]clientConn)
+	followers := make(map[int]map[int]int)
+	conns := make(map[int]chan event)
 	eventQ := make(map[int]event)
 
 	go func() {
@@ -172,7 +173,7 @@ func notifier(lastSequenceID int, done chan struct{}) (chan<- event, chan<- clie
 					if e, ok := eventQ[lastSequenceID]; ok {
 						delete(eventQ, e.SequenceID)
 						if err := handleEvent(e, followers, conns); err != nil {
-							log.Printf("notification error: %v", err)
+							log.Fatalf("notification error: %s", err)
 						}
 						lastSequenceID++
 
@@ -182,9 +183,9 @@ func notifier(lastSequenceID int, done chan struct{}) (chan<- event, chan<- clie
 				}
 
 			case c := <-connch:
-				conns[c.ID] = c
+				conns[c.ID] = clientNotifier(c)
 			case <-done:
-				closeConns(conns)
+				//closeConns(conns) //TODO: fix this
 				return
 			}
 		}
@@ -193,41 +194,68 @@ func notifier(lastSequenceID int, done chan struct{}) (chan<- event, chan<- clie
 	return ech, connch, nil
 }
 
-func handleEvent(e event, followers map[int][]int, conns map[int]clientConn) error {
+func clientNotifier(c clientConn) chan event {
+	ech := make(chan event, 1)
+
+	var e event
+	go func() {
+		for {
+			e = <-ech
+			if err := notifyClient(e, c); err != nil {
+				log.Fatal(err)
+			}
+
+		}
+	}()
+
+	return ech
+}
+
+func handleEvent(e event, followers map[int]map[int]int, conns map[int]chan event) error {
 	switch e.Kind {
 	case broadcast:
-		var n []int
-		log.Printf("broadcast from %d to %v", e.FromID, n)
+		//log.Printf("broadcast from %d to %v", e.FromID, conns)
 		for _, c := range conns {
-			if err := notifyClient(e, c); err != nil {
-				return err
-			}
+			//if err := notifyClient(e, c); err != nil {
+			c <- e
+			//return err
+			//}
 		}
 	case privateMsg:
 		if c, ok := conns[e.ToID]; ok {
-			log.Printf("private from %d to %d", e.FromID, e.ToID)
-			return notifyClient(e, c)
+			//log.Printf("private from %d to %d", e.FromID, e.ToID)
+			//return notifyClient(e, c)
+			c <- e
 		}
 	case follow:
-		f := followers[e.ToID]
-		followers[e.ToID] = append(f, e.FromID) // add follower
-		log.Printf("follow from %d to %d, followers %v", e.FromID, e.ToID, followers[e.ToID])
+		f, ok := followers[e.ToID]
+		if !ok {
+			f = make(map[int]int)
+		}
+		//f[e.ToID] = append(f, e.FromID) // add follower
+		f[e.FromID] = e.FromID // add follower
+		followers[e.ToID] = f
+		//log.Printf("follow from %d to %d, followers %v", e.FromID, e.ToID, followers[e.ToID])
 		if c, ok := conns[e.ToID]; ok {
-			return notifyClient(e, c)
+			//return notifyClient(e, c)
+			c <- e
 		}
 	case statusUpdate:
-		for _, f := range followers[e.FromID] {
+		fers := followers[e.FromID]
+		for _, f := range fers {
 			if c, ok := conns[f]; ok {
-				if err := notifyClient(e, c); err != nil {
-					return err
-				}
-				log.Printf("status from %d to %v", e.FromID, followers[e.FromID])
+				//if err := notifyClient(e, c); err != nil {
+				//return err
+				//}
+				c <- e
+				//log.Printf("status from %d to %v", e.FromID, followers[e.FromID])
 			}
 		}
 	case unfollow:
 		// remove follower
-		delete(followers, e.ToID)
-		log.Printf("%d unfollowed %d", e.FromID, e.ToID)
+		f := followers[e.ToID]
+		delete(f, e.FromID)
+		//log.Printf("%d unfollowed %d", e.FromID, e.ToID)
 	default:
 		return fmt.Errorf("unknown event type %v", e)
 	}
@@ -242,6 +270,7 @@ func closeConns(cm map[int]clientConn) {
 }
 
 func notifyClient(e event, c clientConn) error {
+	//log.Printf("notify %d of %d from %d", c.ID, e.SequenceID, e.FromID)
 	_, err := io.Copy(c.Conn, strings.NewReader(e.RawMessage))
 	return err
 }
