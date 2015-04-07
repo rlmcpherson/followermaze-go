@@ -69,8 +69,9 @@ func Start(srcAddr, clientAddr string, firstSequenceID int) (*Server, error) {
 	return &Server{done, true, srcSrv, clientSrv}, nil
 }
 
-// Stop shuts down both the client and event servers
-// All client connections are closed
+// Stop shuts down both the client and event servers.
+// All client connections are closed.
+// Substequent calls to Stop() return an error
 func (s *Server) Stop() error {
 
 	if !s.running {
@@ -157,24 +158,22 @@ func clientHandler(connch chan<- clientConn) connHandler {
 // receives client connections from clientServer on clientConn channel
 // store pending events in map if out of order
 func notifier(lastSequenceID int, done chan struct{}) (chan<- event, chan<- clientConn, error) {
-	ech := make(chan event)
+	eventChan := make(chan event)
 	connch := make(chan clientConn)
 	followers := make(map[int]map[int]int)
-	conns := make(map[int]chan event)
+	clientEventChan := make(map[int]chan event)
 	eventQ := make(map[int]event)
 
 	go func() {
 		for {
 			select {
-			case e := <-ech:
+			case e := <-eventChan:
 				eventQ[e.SequenceID] = e
 				// handle events in order
 				for {
 					if e, ok := eventQ[lastSequenceID]; ok {
 						delete(eventQ, e.SequenceID)
-						if err := handleEvent(e, followers, conns); err != nil {
-							log.Fatalf("notification error: %s", err)
-						}
+						handleEvent(e, followers, clientEventChan)
 						lastSequenceID++
 
 					} else {
@@ -183,26 +182,30 @@ func notifier(lastSequenceID int, done chan struct{}) (chan<- event, chan<- clie
 				}
 
 			case c := <-connch:
-				conns[c.ID] = clientNotifier(c)
+				clientEventChan[c.ID] = clientNotifier(c, done)
 			case <-done:
-				//closeConns(conns) //TODO: fix this
 				return
 			}
 		}
 
 	}()
-	return ech, connch, nil
+	return eventChan, connch, nil
 }
 
-func clientNotifier(c clientConn) chan event {
+func clientNotifier(c clientConn, done chan struct{}) chan event {
+	// allow event in chan while handling another
 	ech := make(chan event, 1)
 
 	var e event
 	go func() {
 		for {
-			e = <-ech
-			if err := notifyClient(e, c); err != nil {
-				log.Fatal(err)
+			select {
+			case e = <-ech:
+				if err := notifyClient(e, c); err != nil {
+					log.Printf("error notifying client %d: %s", c.ID, err)
+				}
+			case <-done:
+				return
 			}
 
 		}
@@ -211,20 +214,14 @@ func clientNotifier(c clientConn) chan event {
 	return ech
 }
 
-func handleEvent(e event, followers map[int]map[int]int, conns map[int]chan event) error {
+func handleEvent(e event, followers map[int]map[int]int, conns map[int]chan event) {
 	switch e.Kind {
 	case broadcast:
-		//log.Printf("broadcast from %d to %v", e.FromID, conns)
 		for _, c := range conns {
-			//if err := notifyClient(e, c); err != nil {
 			c <- e
-			//return err
-			//}
 		}
 	case privateMsg:
 		if c, ok := conns[e.ToID]; ok {
-			//log.Printf("private from %d to %d", e.FromID, e.ToID)
-			//return notifyClient(e, c)
 			c <- e
 		}
 	case follow:
@@ -232,51 +229,32 @@ func handleEvent(e event, followers map[int]map[int]int, conns map[int]chan even
 		if !ok {
 			f = make(map[int]int)
 		}
-		//f[e.ToID] = append(f, e.FromID) // add follower
 		f[e.FromID] = e.FromID // add follower
 		followers[e.ToID] = f
-		//log.Printf("follow from %d to %d, followers %v", e.FromID, e.ToID, followers[e.ToID])
 		if c, ok := conns[e.ToID]; ok {
-			//return notifyClient(e, c)
 			c <- e
 		}
 	case statusUpdate:
 		fers := followers[e.FromID]
 		for _, f := range fers {
 			if c, ok := conns[f]; ok {
-				//if err := notifyClient(e, c); err != nil {
-				//return err
-				//}
 				c <- e
-				//log.Printf("status from %d to %v", e.FromID, followers[e.FromID])
 			}
 		}
 	case unfollow:
-		// remove follower
 		f := followers[e.ToID]
 		delete(f, e.FromID)
-		//log.Printf("%d unfollowed %d", e.FromID, e.ToID)
-	default:
-		return fmt.Errorf("unknown event type %v", e)
-	}
-	return nil
-}
 
-func closeConns(cm map[int]clientConn) {
-	for _, c := range cm {
-		_ = c.Close()
+	default:
+		// should never get here unless Kind type is modified and parseEvent is incorrect
+		panic(fmt.Sprintf("unknown event type %v", e.Kind))
 	}
-	return
 }
 
 func notifyClient(e event, c clientConn) error {
-	//log.Printf("notify %d of %d from %d", c.ID, e.SequenceID, e.FromID)
 	_, err := io.Copy(c.Conn, strings.NewReader(e.RawMessage))
 	return err
 }
-
-//TODO:
-// clean up logging
 
 func parseEvent(s string) (event, error) {
 	var e event
