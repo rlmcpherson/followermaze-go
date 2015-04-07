@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"runtime"
 	"strconv"
 
 	"github.com/rlmcpherson/followermaze"
@@ -40,6 +41,7 @@ func init() {
 }
 
 func main() {
+	runtime.GOMAXPROCS(runtime.NumCPU())
 	server, err := followermaze.Start(opts[0].val, opts[1].val, sequenceID)
 	if err != nil {
 		fmt.Println(err)
