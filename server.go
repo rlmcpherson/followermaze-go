@@ -247,7 +247,6 @@ func notifyClient(e event, c clientConn) error {
 }
 
 //TODO:
-// cli w/ configurable addrs for servers
 // clean up logging
 
 func parseEvent(s string) (event, error) {
