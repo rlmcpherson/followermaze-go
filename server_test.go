@@ -53,9 +53,9 @@ func TestStartServerJar(t *testing.T) {
 	}
 	defer s.Stop()
 	c := exec.Command("time", "java", "-server", "-Xmx1G", "-jar", "./follower-maze-2.0.jar")
-	// limit events to default, otherwise jar apparently runs forever when exec'ed
-	// randomize seed
-	c.Env = []string{"totalEvents=10000", fmt.Sprintf("randomSeed=%d", rand.Intn(1e5))}
+	// set event total and randomize seed
+	// 1 million events executes in ~26 seconds on retina MBP, so used to limit test duration
+	c.Env = []string{"totalEvents=1000000", fmt.Sprintf("randomSeed=%d", rand.Intn(1e5))}
 	out, err = c.CombinedOutput()
 	if err != nil {
 		t.Log(string(out))
@@ -114,6 +114,23 @@ func TestParseEvent(t *testing.T) {
 		}
 		if !reflect.DeepEqual(e, tt.e) {
 			t.Errorf("expected: %v, got: %v", tt.e, e)
+		}
+	}
+}
+
+func BenchmarkParseEvent(b *testing.B) {
+	var evTests = []struct {
+		in  string
+		e   event
+		err bool
+	}{
+		{"666|F|60|50", event{666, follow, 60, 50, "666|F|60|50\n"}, false},
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := parseEvent(evTests[0].in)
+		if err != nil {
+			b.Fatal(err)
 		}
 	}
 }
@@ -221,5 +238,4 @@ func TestStopNoStart(t *testing.T) {
 	if err.Error() != "server already stopped" {
 		t.Fatal(err)
 	}
-
 }
