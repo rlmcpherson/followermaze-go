@@ -42,6 +42,8 @@ go tool cover -html=cover.out
 ```
 See https://godoc.org/golang.org/x/tools/cmd/cover
 
+Alternatively, open the included [testcoverage.html](testcoverage.html) file in a web browser.
+
 ## Server Options
 
 All options can be set via environment variables:
