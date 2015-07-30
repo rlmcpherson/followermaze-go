@@ -1,3 +1,5 @@
+# followermaze
+
 ## Installation
 
 **Requirements:** The followermaze server requires go version >=1.4 and a
