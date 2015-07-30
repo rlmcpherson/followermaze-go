@@ -44,7 +44,9 @@ go tool cover -html=cover.out
 ```
 See https://godoc.org/golang.org/x/tools/cmd/cover
 
-Alternatively, open the included [testcoverage.html](testcoverage.html) file in a web browser.
+Alternatively, view
+[testcoverage.html](http://htmlpreview.github.io/?https://github.com/rlmcpherson/followermaze-go/blob/master/testcoverage.html)
+(github link) or open it in a web browser.
 
 ## Server Options
 
